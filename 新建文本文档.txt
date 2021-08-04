@@ -1,0 +1,36 @@
+聊聊MySQL中的Binlog 和Redo log
+
+MySQL中InnoDB引擎支持事务，开始的时候原生引擎是MyISAM,正因为MyISAM不支持事务，并且没有crash-safe功能；
+所以被InnoDB取代，成为MySQL的默认引擎。
+这里crash-safe功能其实是redo log（重做日志）带来的功能，指的是即使数据库发生崩溃，异常重启，它之前保存的记录都不会丢失。
+我们可以引用酒肆掌柜的场景来解释redo log, 掌柜一般有“粉板”和“账本”来记录客户赊账的情况。当人太多的时候，掌柜会先写“粉板”，
+空闲的时候再写“账本”。WAL技术：”Write Ahead Logging“ 先写日志，再写磁盘。这一技术就是引用了酒肆掌柜这一概念。
+
+redo log 重做日志，其类似一张“粉板”，它结构上由4个文件组成，每个文件大小是1GB,总文件固定大小为4GB。
+redo log 是循环写，从头到末尾。
+redo log 有两个指针：
+      -write pos:  当前记录的位置
+      -check point: 要擦除记录的位置，在擦除记录之间，是需要把记录更新到日志文件中。
+
+write pos 与check point 之间就是”粉板“，用来记录新的更新操作，当write pos 追上check point时，表示”粉板“用完了，
+不能再记录新的操作了，需要擦除一些记录，把check point往前挪。
+
+redo log 与 bin log 的区别：
+1. redo log 是InnoDB引擎特有的，而bin log 是MySQL Server 层的日志，所有的引擎都可以使用。
+2. redo log 是物理日志，记录的是”这某数据页上做了什么操作“；而bin log是逻辑日志，记录的是”对某列c字段值加1“操作；
+3.redo log 是循环写的，固定文件大小，是会写完的；而bin log 是追加写的，当一个文件快写完时，会添加一个新文件，追加写，不覆盖旧日志。
+
+
+-----------------
+日志为什么需要两阶段提交？
+bin
+目的是为了保证两个日志之间的逻辑一致性，解决数据库恢复，库内数据不一致的问题。
+
+假如,以更新操作为例，某列上，c=0，现 把c的值修改为1。
+
+1. 先写redo log 后写bin log ,redo log 写完后，crash 了，bin log 没写完。我们知道，就算数据库崩溃了，mysql异常重启，redo log的crash-safe功能
+可以保证之前的数据不丢失，那么恢复数据库时，c的值为1。而bin log没写完就crash 了，则 bin log 中不存在”把c的值修改为1“的逻辑记录，
+当我们以bin log来恢复临时库后，发现c的值是0，这导致主从库之间的数据不一致。
+
+2.先写bin log 再写redo log, bin log 写完后，crash了，redo log 没写完。数据库崩溃恢复后，事务会无效化，因此c的值是0，而bin log 日志
+中存在有”把c的值修改为1“的逻辑日志，当我们以bin log 恢复临时库后发现，c的值为1。主从库之间数据不一致。
